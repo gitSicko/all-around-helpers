@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timedelta
 import streamlit as st
 from streamlit_calendar import calendar
 
-from utils import authed_client
+from utils import authed_client, get_profile
 
 
 st.title("📅 Planner")
@@ -26,7 +26,7 @@ if next_mode:
 
 mode = st.radio(
     "Planner mode",
-    ["Kalender", "Tambah jadwal", "To-do"],
+    ["Kalender", "Tambah jadwal", "Jadwal kuliah", "To-do"],
     horizontal=True,
     label_visibility="collapsed",
     key="planner_mode",
@@ -214,6 +214,119 @@ elif mode == "Tambah jadwal":
                 ).execute()
                 st.session_state.pop("planner_prefill_datetime", None)
                 st.success("Jadwal ditambahkan.")
+                st.session_state["planner_mode"] = "Kalender"
+                st.rerun()
+
+
+elif mode == "Jadwal kuliah":
+    st.subheader("🎓 Jadwal kuliah mingguan")
+    st.caption(
+        "Masukkan satu kali jadwal, lalu semua pertemuan mingguan sampai akhir periode akan otomatis muncul di kalender. "
+        "Kalau ada libur atau kelas ditiadakan, pertemuan pada tanggal itu bisa dihapus satu-satu dari Kalender."
+    )
+
+    DAY_NAMES = [
+        "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"
+    ]
+
+    today = date.today()
+    default_until = today + timedelta(days=120)
+
+    with st.form("weekly_class_form", clear_on_submit=False):
+        course_name = st.text_input("Mata kuliah", placeholder="Contoh: Analisis Log Sumur")
+        first_date = st.date_input(
+            "Pertemuan pertama",
+            value=today,
+            help="Hari pada tanggal ini akan menjadi hari kuliah setiap minggu.",
+        )
+        until_date = st.date_input(
+            "Ulangi sampai",
+            value=default_until,
+            help="Biasanya isi dengan tanggal akhir semester/perkuliahan.",
+        )
+
+        c1, c2 = st.columns(2)
+        start_t = c1.time_input("Jam mulai", value=time(8, 0), key="class_start")
+        end_t = c2.time_input("Jam selesai", value=time(10, 0), key="class_end")
+
+        c3, c4 = st.columns(2)
+        room = c3.text_input("Ruangan / lokasi", placeholder="Contoh: Lab 3")
+        lecturer = c4.text_input("Dosen (opsional)", placeholder="Nama dosen")
+
+        extra_note = st.text_area("Catatan tambahan", placeholder="Contoh: bawa laptop / modul")
+
+        share_with_partner = False
+        try:
+            profile = get_profile()
+            if profile.get("couple_id"):
+                share_with_partner = st.checkbox(
+                    "❤️ Tampilkan juga di Couple Calendar",
+                    value=False,
+                    help="Pasanganmu akan bisa melihat jadwal kuliah ini di kalender bersama.",
+                )
+        except Exception:
+            profile = {}
+
+        add_weekly = st.form_submit_button("Tambahkan jadwal setiap minggu", use_container_width=True)
+
+    weekday_name = DAY_NAMES[first_date.weekday()]
+    if until_date >= first_date:
+        total_meetings = ((until_date - first_date).days // 7) + 1
+        st.info(
+            f"📌 Jadwal akan dibuat setiap **{weekday_name}**, "
+            f"sebanyak **{total_meetings} pertemuan** dari "
+            f"**{first_date.strftime('%d/%m/%Y')}** sampai **{until_date.strftime('%d/%m/%Y')}**."
+        )
+
+    if add_weekly:
+        if not course_name.strip():
+            st.error("Nama mata kuliah wajib diisi.")
+        elif until_date < first_date:
+            st.error("Tanggal akhir harus sama dengan atau setelah pertemuan pertama.")
+        elif end_t <= start_t:
+            st.error("Jam selesai harus setelah jam mulai.")
+        else:
+            dates = []
+            current = first_date
+            while current <= until_date:
+                dates.append(current)
+                current += timedelta(days=7)
+
+            if len(dates) > 60:
+                st.error("Periode terlalu panjang. Maksimal 60 pertemuan untuk satu jadwal kuliah.")
+            else:
+                note_parts = []
+                if room.strip():
+                    note_parts.append(f"Lokasi: {room.strip()}")
+                if lecturer.strip():
+                    note_parts.append(f"Dosen: {lecturer.strip()}")
+                if extra_note.strip():
+                    note_parts.append(extra_note.strip())
+                note_text = " · ".join(note_parts)
+
+                scope = "couple" if share_with_partner else "private"
+                couple_id = profile.get("couple_id") if share_with_partner else None
+
+                payload = []
+                for meeting_date in dates:
+                    start_dt = datetime.combine(meeting_date, start_t)
+                    end_dt = datetime.combine(meeting_date, end_t)
+                    row = {
+                        "title": course_name.strip(),
+                        "start_at": start_dt.isoformat(),
+                        "end_at": end_dt.isoformat(),
+                        "category": "Kuliah",
+                        "notes": note_text,
+                        "scope": scope,
+                    }
+                    if couple_id:
+                        row["couple_id"] = couple_id
+                    payload.append(row)
+
+                client.table("events").insert(payload).execute()
+                st.success(
+                    f"Berhasil menambahkan {len(payload)} pertemuan {course_name.strip()} setiap {weekday_name} 🎓"
+                )
                 st.session_state["planner_mode"] = "Kalender"
                 st.rerun()
 
